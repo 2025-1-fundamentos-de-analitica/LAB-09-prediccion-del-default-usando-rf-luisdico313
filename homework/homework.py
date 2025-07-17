@@ -95,147 +95,131 @@
 
 
 
-import pandas as pd
-import pickle
-import gzip
-import json
-import os
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.pipeline import Pipeline
-from sklearn.compose import ColumnTransformer
-from sklearn.preprocessing import OneHotEncoder
-from sklearn.model_selection import GridSearchCV
-from sklearn.metrics import precision_score, recall_score, f1_score, balanced_accuracy_score, confusion_matrix
-from glob import glob
+import pandas as pd #type: ignore
+import os #type: ignore
+import gzip #type: ignore
+import pickle #type: ignore
+import json #type: ignore
+from sklearn.model_selection import GridSearchCV #type: ignore
+from sklearn.ensemble import RandomForestClassifier#type: ignore
+from sklearn.pipeline import Pipeline #type: ignore
+from sklearn.compose import ColumnTransformer 
+from sklearn.preprocessing import OneHotEncoder #type: ignore
+from sklearn.metrics import precision_score, balanced_accuracy_score, recall_score, f1_score, confusion_matrix #type: ignore
 
+#Se carga la data desde un archivo comprimido en formato zip
+def cargar_data(path: str) -> pd.DataFrame:
+    return pd.read_csv(path, index_col=False, compression="zip")
 
-def load_data(path: str) -> pd.DataFrame:
-    df = pd.read_csv(path, compression = 'zip')
+#Preprocesamiento inicial de los datos
+def clean_dataset(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.rename(columns={"default payment next month": "default"})
+    df = df.drop(columns=["ID"])
+    df = df.loc[df["MARRIAGE"] != 0] 
+    df = df.loc[df["EDUCATION"] != 0] 
+    df["EDUCATION"] = df["EDUCATION"].apply(lambda x: x if x < 4 else 4)
     return df
 
-def clean_data(DataFrame: pd.DataFrame) -> pd.DataFrame:
-    DataFrame.drop(columns = 'ID', inplace = True)
-    DataFrame.rename(columns = {'default payment next month': 'default'},
-                     inplace = True)
-    DataFrame['EDUCATION'] = DataFrame['EDUCATION'].apply(lambda x: 4 if x >= 4 else x).astype('category')
-    DataFrame = DataFrame.query('EDUCATION != 0 and MARRIAGE != 0')
-    return DataFrame
-
-def features_target_split(DataFrame: pd.DataFrame) -> tuple:
-    return DataFrame.drop(columns = 'default'), DataFrame['default']
-
-def make_pipeline(estimator: RandomForestClassifier, cat_features: list, num_features: list) -> Pipeline:
+#Creación de la pipeline de procesamiento y clasificación
+def crear_pipeline() -> Pipeline:
+    cat_features = ["SEX", "EDUCATION", "MARRIAGE"]
     preprocessor = ColumnTransformer(
-        transformers = [
-            ('cat', OneHotEncoder(handle_unknown = 'ignore'), cat_features),
-            ('num', 'passthrough', num_features)
+        transformers=[("cat", OneHotEncoder(handle_unknown="ignore"), cat_features)],
+        remainder="passthrough",
+    )
+    return Pipeline(
+        steps=[
+            ("preprocessor", preprocessor),
+            ("classifier", RandomForestClassifier(random_state=42)),
         ]
     )
 
-    pipeline = Pipeline(
-        steps = [
-            ('preprocessor', preprocessor),
-            ('classifier', estimator)
-        ],
-        verbose = False
-    )
-
-    return pipeline
-
-def make_grid_search(estimator: Pipeline, param_grid: dict, cv = 10) -> GridSearchCV:
-    grid_search = GridSearchCV(
-        estimator = estimator,
-        param_grid = param_grid,
-        cv = cv,
-        scoring = 'balanced_accuracy',
-        n_jobs = -1
-    )
-    return grid_search
-
-def save_estimator(path: str, estimator: Pipeline) -> None:
-    with gzip.open(path, 'wb') as file:
-        pickle.dump(estimator, file)
-
-def eval_model(estimator: Pipeline, features: pd.DataFrame, target: pd.Series, name: str) -> dict:
-    y_pred = estimator.predict(features)
-    metrics = {
-        'type': 'metrics',
-        'dataset': name,
-        'precision': precision_score(target, y_pred),
-        'balanced_accuracy': balanced_accuracy_score(target, y_pred),
-        'recall': recall_score(target, y_pred),
-        'f1_score': f1_score(target, y_pred)
-    }
-    return metrics
-    
-def save_metrics(path: str, train_metrics: dict, test_metrics: dict) -> None:
-    with open(path, 'w') as file:
-        file.write(json.dumps(train_metrics) + '\n')
-        file.write(json.dumps(test_metrics) + '\n')
-
-def confusion_mtrx(estimator: Pipeline, features: pd.DataFrame, target: pd.Series, name: str) -> dict:
-    y_pred = estimator.predict(features)
-    cm = confusion_matrix(target, y_pred)
-    mtrx = {
-        'type': 'cm_matrix',
-        'dataset': name,
-        'true_0': {'predicted_0': int(cm[0, 0]),
-                   'predicted_1': int(cm[0, 1])},
-        'true_1': {'predicted_0': int(cm[1, 0]),
-                   'predicted_1': int(cm[1, 1])}
-    }
-    return mtrx
-
-def save_cm(path: str, train_mtrx: dict, test_mtrx: dict) -> None:
-    with open(path, 'a') as file:
-        file.write(json.dumps(train_mtrx) + '\n')
-        file.write(json.dumps(test_mtrx))
-
-def create_out_dir(out_dir: str) -> None:
-        if os.path.exists(out_dir):
-            for file in glob(f'{out_dir}/*'):
-                os.remove(file)
-            os.rmdir(out_dir)
-        os.makedirs(out_dir)
-
-def run():
-
-    train = clean_data(load_data("files/input/train_data.csv.zip"))
-    test = clean_data(load_data("files/input/test_data.csv.zip"))
-
-    x_train, y_train = features_target_split(train)
-    x_test, y_test = features_target_split(test)
-
-    cat_features = [col for col in x_test.columns if x_test[col].dtype == 'category']
-    num_features = [col for col in x_test.columns if x_test[col].dtype != 'category']
-
-    pipeline = make_pipeline(RandomForestClassifier(), cat_features, num_features)
-    
+#Creación del estimador con GridSearchCV para optimizar hiperparámetros
+def crear_estimador(pipeline: Pipeline) -> GridSearchCV:
     param_grid = {
-    'classifier__n_estimators': [200],
-    'classifier__max_depth': [35],
-    'classifier__class_weight': ['balanced'],
-    'classifier__max_features': ['log2'],
-}
-    estimator = make_grid_search(
+        "classifier__n_estimators": [50, 100, 200],
+        "classifier__max_depth": [None, 5, 10, 20],
+        "classifier__min_samples_split": [2, 5, 10],
+        "classifier__min_samples_leaf": [1, 2, 4],
+    }
+
+    return GridSearchCV(
         pipeline,
         param_grid,
-        10
+        cv=10,
+        scoring="balanced_accuracy",
+        n_jobs=-1,
+        verbose=2,
+        refit=True,
     )
+
+# Guardar el modelo entrenado en un archivo comprimido
+def guardar_model(path: str, estimator: GridSearchCV):
+    os.makedirs(os.path.dirname(path), exist_ok=True) 
+    with gzip.open(path, "wb") as f:
+        pickle.dump(estimator, f)
+
+# Calcular métricas de precisión y otras métricas de evaluación
+def metrics(dataset_name: str, y_true, y_pred) -> dict:
+    return {
+        "type": "metrics",
+        "dataset": dataset_name,
+        "precision": precision_score(y_true, y_pred, zero_division=0),
+        "balanced_accuracy": balanced_accuracy_score(y_true, y_pred),
+        "recall": recall_score(y_true, y_pred, zero_division=0),
+        "f1_score": f1_score(y_true, y_pred, zero_division=0),
+    }
+
+# Calcular la matriz de confusión y sus métricas asociadas
+def calculate_confusion_metrics(dataset_name: str, y_true, y_pred) -> dict:
+    cm = confusion_matrix(y_true, y_pred)
+    return {
+        "type": "cm_matrix",
+        "dataset": dataset_name,
+        "true_0": {"predicted_0": int(cm[0][0]), "predicted_1": int(cm[0][1])},
+        "true_1": {"predicted_0": int(cm[1][0]), "predicted_1": int(cm[1][1])},
+    }
+
+# Función main que ejecuta todo el flujo de trabajo
+def main():
+    input_files_path = "files/input/"
+    models_files_path = "files/models/"
+    output_files_path = "files/output/"
+
+    #Carga data
+    test_df = cargar_data(os.path.join(input_files_path, "test_data.csv.zip"))
+    train_df = cargar_data(os.path.join(input_files_path, "train_data.csv.zip"))
+    #Limpieza de data
+    test_df = clean_dataset(test_df)
+    train_df = clean_dataset(train_df)
+    #Dropea columnas y separa en x e y
+    x_test = test_df.drop(columns=["default"])
+    y_test = test_df["default"]
+    #Separa el conjunto de entrenamiento en x e y
+    x_train = train_df.drop(columns=["default"])
+    y_train = train_df["default"]
+    #Crea la pipeline y el estimador
+    pipeline = crear_pipeline()
+    #Crea el estimador con GridSearchCV
+    estimator = crear_estimador(pipeline)
     estimator.fit(x_train, y_train)
+    #Guarda el modelo entrenado
+    guardar_model(os.path.join(models_files_path, "model.pkl.gz"), estimator)
+    #Realiza predicciones y calcula métricas
+    y_test_pred = estimator.predict(x_test)
+    test_precision_metrics = metrics("test", y_test, y_test_pred)
+    y_train_pred = estimator.predict(x_train)
+    train_precision_metrics = metrics("train", y_train, y_train_pred)
+    #Calcula las métricas de confusión
+    test_confusion_metrics = calculate_confusion_metrics("test", y_test, y_test_pred)
+    train_confusion_metrics = calculate_confusion_metrics("train", y_train, y_train_pred)
+    #Guarda las métricas en un archivo JSON
+    os.makedirs(output_files_path, exist_ok=True)
+    with open(os.path.join(output_files_path, "metrics.json"), "w") as file:
+        file.write(json.dumps(train_precision_metrics) + "\n")
+        file.write(json.dumps(test_precision_metrics) + "\n")
+        file.write(json.dumps(train_confusion_metrics) + "\n")
+        file.write(json.dumps(test_confusion_metrics) + "\n")
 
-    create_out_dir("files/models")
-    create_out_dir("files/output")
-
-    save_estimator("files/models/model.pkl.gz", estimator)
-
-    train_metrics = eval_model(estimator, x_train, y_train, 'train')
-    test_metrics = eval_model(estimator, x_test, y_test, 'test')
-    save_metrics("files/output/metrics.json", train_metrics, test_metrics)
-
-    train_cm = confusion_mtrx(estimator, x_train, y_train, 'train')
-    test_cm = confusion_mtrx(estimator, x_test, y_test, 'test')
-    save_cm("files/output/metrics.json", train_cm, test_cm)    
-
-if __name__ == '__main__':
-    run()
+if __name__ == "__main__":
+    main()
